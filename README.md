@@ -11,16 +11,17 @@ REST API на FastAPI для конвертации, хранения и сбо�
 - APScheduler
 - Pytest
 
-## Endpoints
-| GET | `/` |
-| GET | `/rate/{base}/{quote}` |
-| GET | `/convert/{base}/{quote}?amount=100` |
-| GET | `/history` |
-| GET | `/history?base=EUR` |
-| GET | `/history?quote=USD` |
-| GET | `/history?date=2026-10-01` |
+## Эндпойнты
+|---|---|---|
+| GET | `/` | Проверка |
+| GET | `/rate/{base}/{quote}` | Получение курсов |
+| GET | `/convert/{base}/{quote}?amount=100` | Конвертация |
+| GET | `/history` | История запросов |
+| GET | `/history?base=EUR` | Фильтр по первой валюте |
+| GET | `/history?quote=USD` | Фильтр по второй валюте |
+| GET | `/history?date=2026-10-01` | Фильтр по дате |
 
-## Running Tests
+## Запуск
 
 ```bash
 uv run python -m pytest -v
