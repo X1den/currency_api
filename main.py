@@ -1,22 +1,56 @@
 import httpx 
-from fastapi import FastAPI, HTTPException
 import sqlite3
+import logging
+from fastapi import FastAPI, HTTPException
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from contextlib import asynccontextmanager
 
-app = FastAPI()
+DB_PATH = "currency.db"
 
-conn = sqlite3.connect("currency.db")
-cursor = conn.cursor()
-cursor.execute('''
-             CREATE TABLE IF NOT EXISTS rate_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                base TEXT NOT NULL,
-                quote TEXT NOT NULL,
-                rate DECIMAL(10, 4) NOT NULL
-            )
-            ''')
+def get_connection(db_path: str | None = None):
+    if db_path is None:
+        db_path = DB_PATH
+    return sqlite3.connect(db_path)
 
-conn.commit()
-conn.close()
+scheduler = AsyncIOScheduler()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db(DB_PATH)
+    
+    scheduler.add_job(collect_rates, "interval", hours=24)
+    scheduler.start()
+    yield
+    scheduler.shutdown()
+    
+app = FastAPI(lifespan=lifespan)
+
+CURRENCY_PAIRS = [
+    ('EUR', 'USD'),
+    ('EUR', 'RUB'),
+    ('USD', 'RUB'),
+]
+
+def init_db(db_path: str):
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS rate_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            base TEXT NOT NULL,
+            quote TEXT NOT NULL,
+            rate DECIMAL(10, 4) NOT NULL,
+            UNIQUE (date, base, quote)
+        )
+        '''
+    )
+    conn.commit()
+    conn.close()
 
 @app.get("/")
 def get_status():
@@ -60,21 +94,24 @@ async def fetch_rate(base: str, quote: str):
     data = response.json()
     return data
 
-def save_rate(base: str, quote: str, rate: float):
-    with sqlite3.connect("currency.db") as conn:
+def save_rate(date: str, base: str, quote: str, rate: float):
+    with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute('''
-                       INSERT INTO rate_history (base, quote, rate)
-                       VALUES (?, ?, ?)
-                   ''', 
-                   (base.upper(), quote.upper(), rate)
+        cursor.execute(
+            '''
+            INSERT INTO rate_history (date, base, quote, rate)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(date, base, quote) DO NOTHING
+            ''', 
+            (date, base.upper(), quote.upper(), rate)
                    )
     
 @app.get("/rate/{base}/{quote}")
 async def get_rate(base: str, quote: str):
     data = await fetch_rate(base, quote)
-    save_rate(base, quote, data["rate"])
+    save_rate(data["date"], base, quote, data["rate"])
     return {
+        "date": data["date"],
         "base": base.upper(),
         "quote": quote.upper(),
         "rate": data["rate"]
@@ -93,6 +130,7 @@ async def convert(base: str, quote:str, amount: float, precision: int = 2):
         
     data = await fetch_rate(base, quote)
     return {
+        "date": data["date"],
         "base": base.upper(),
         "quote": quote.upper(),
         "amount": amount,
@@ -101,20 +139,63 @@ async def convert(base: str, quote:str, amount: float, precision: int = 2):
     }
     
 @app.get("/history")
-def get_history():
-    with sqlite3.connect("currency.db") as conn:
+def get_history(date: str | None = None, base: str | None = None, quote: str | None = None):
+    with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute('''
-                       SELECT id, base, quote, rate
-                       FROM rate_history
-                       ORDER BY id DESC
-                       ''')
+        
+        conditions = []
+        params = []
+        
+        if date:
+            conditions.append("date = ?")
+            params.append(date)
+            
+        if base:
+            conditions.append("base = ?")
+            params.append(base.upper())
+            
+        if quote:
+            conditions.append("quote = ?")
+            params.append(quote.upper())
+        
+        query = """
+            SELECT id, date, base, quote, rate
+            FROM rate_history
+        """
+        
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+            
+        query += " ORDER BY id DESC"
+        cursor.execute(query, params)
+        
         rows = cursor.fetchall()
         return [
             {
                 "id": row[0],
-                "base": row[1],
-                "quote": row[2],
-                "rate": row[3]
+                "date": row[1],
+                "base": row[2],
+                "quote": row[3],
+                "rate": row[4]
             }
             for row in rows]
+        
+async def collect_rates():
+    for base, quote in CURRENCY_PAIRS:
+        try:
+            data = await fetch_rate(base, quote)
+            save_rate(data["date"], base, quote, data["rate"])
+            logger.info(
+                "Saved rate for %s/%s: %s (%s)",
+                        base,
+                        quote,
+                        data["rate"],
+                        data["date"]
+                    )
+        except HTTPException as e:
+            logger.error(
+                "Failed to collect rate for %s/%s: %s",
+                base,
+                quote,
+                e.detail
+            )
