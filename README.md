@@ -12,6 +12,7 @@ REST API на FastAPI для конвертации, хранения и сбо�
 - Pytest
 
 ## Эндпойнты
+| Метод | Эндпойнт | Описание |
 |---|---|---|
 | GET | `/` | Проверка |
 | GET | `/rate/{base}/{quote}` | Получение курсов |
@@ -22,6 +23,13 @@ REST API на FastAPI для конвертации, хранения и сбо�
 | GET | `/history?date=2026-10-01` | Фильтр по дате |
 
 ## Запуск
+
+```bash
+uv sync
+uv run uvicorn main:app --reload
+```
+
+## Запуск тестов
 
 ```bash
 uv run python -m pytest -v
